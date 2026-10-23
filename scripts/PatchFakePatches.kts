@@ -271,6 +271,35 @@ fun applyPostPatchFixups() {
     }
 }
 
+fun fixSusfsFakeState() {
+    val file = f("drivers/kernelsu/feature/selinux_hide.c")
+    if (!file.isFile) return
+    var content = file.readText()
+    if (content.contains("\nstruct selinux_state fake_state;")) return
+    val anchor = "bool ksu_selinux_hide_running __read_mostly = false;\n"
+    if (!content.contains(anchor)) {
+        println("[fake_state] anchor not found, skip")
+        return
+    }
+    content = content.replaceFirst(anchor, anchor +
+        "#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_SECURITY_SELINUX) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)\n" +
+        "struct selinux_state fake_state;\n#endif\n")
+    val fnName = "static int ksu_selinux_hide_enable()"
+    val i = content.indexOf(fnName)
+    if (i >= 0) {
+        val j = content.indexOf("\n    return 0;\n}", i)
+        if (j > i) {
+            val ins = "\n#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)\n" +
+                      "    fake_state.initialized = true;\n" +
+                      "    fake_state.policy = backup_sepolicy;\n" +
+                      "#endif"
+            content = content.substring(0, j) + ins + content.substring(j)
+        }
+    }
+    file.writeText(content)
+    println("[fake_state] patched drivers/kernelsu/feature/selinux_hide.c")
+}
+
 // Main
 fun apply() {
     if (kmi == "android12-5.10") {
@@ -391,6 +420,7 @@ fun apply() {
         }
     }
 
+    fixSusfsFakeState()
 }
 
 fun postfix() {
