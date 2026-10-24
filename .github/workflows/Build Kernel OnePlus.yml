@@ -733,6 +733,36 @@ jobs:
           grep -nE '^(REPO_OWNER|REPO_NAME|REPO_BRANCH|KSU_VERSION_API|KSU_VERSION_FULL|VERSION_TAG|GIT_BIN|CURL_BIN)' kernel/Makefile
           echo "::endgroup::"
 
+      - name: Fix SUSFS fake_state for SukiSU
+        if: ${{ github.event.inputs.SUSFS_META != '-1' }}
+        run: |
+          F="kernel_workspace/kernel_platform/common/drivers/kernelsu/feature/selinux_hide.c"
+          [ -f "$F" ] || { echo "selinux_hide.c not found, skip"; exit 0; }
+          if grep -q '^struct selinux_state fake_state;' "$F"; then
+            echo "fake_state already present"
+            exit 0
+          fi
+          python3 - "$F" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = "bool ksu_selinux_hide_running __read_mostly = false;\n"
+          new = old + "#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_SECURITY_SELINUX) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)\nstruct selinux_state fake_state;\n#endif\n"
+          if old not in s:
+              raise SystemExit("anchor not found")
+          s = s.replace(old, new, 1)
+          fn = "static int ksu_selinux_hide_enable()"
+          i = s.index(fn)
+          j = s.index("\n    return 0;\n}", i)
+          ins = ("\n#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)\n"
+                 "    fake_state.initialized = true;\n"
+                 "    fake_state.policy = backup_sepolicy;\n"
+                 "#endif")
+          s = s[:j] + ins + s[j:]
+          open(p, "w").write(s)
+          print("patched fake_state")
+          PY
+
       - name: Apply Fake Patches
         if: ${{ github.event.inputs.SUSFS_META != '-1' }}
         run: |
@@ -1418,7 +1448,7 @@ jobs:
             ./kernel_platform/oplus/bazel/oplus_modules_variant.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
             ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           else
-            LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 \
+            printf '2\n' | env LTO=thin SYSTEM_DLKM_RE_SIGN=0 BUILD_SYSTEM_DLKM=0 KMI_SYMBOL_LIST_STRICT_MODE=0 \
             ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
           fi
 
